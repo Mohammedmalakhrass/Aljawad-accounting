@@ -30,14 +30,74 @@ st.set_page_config(page_title='نظام الحسابات — الجواد', page
 CSS = """
 <style>
 .stApp, [data-testid="stSidebar"] { direction: rtl; text-align: right; }
-h1, h2, h3 { text-align: right; }
+h1, h2, h3 { text-align: right; font-weight:800; }
+
+/* شريط جانبي كحلي زي نسخة الويب */
+[data-testid="stSidebar"] { background:#0f172a; }
+[data-testid="stSidebar"] * { color:#e2e8f0 !important; }
+[data-testid="stSidebar"] hr { border-color:#1e293b; }
+[data-testid="stSidebar"] .stRadio label { background:transparent; border-radius:10px; padding:4px 8px; transition:.15s; }
+[data-testid="stSidebar"] .stRadio label:hover { background:#1e293b; }
+[data-testid="stSidebar"] .stButton > button {
+    background:#1e293b; border:1px solid #334155; color:#e2e8f0 !important; width:100%;
+    border-radius:10px;
+}
+
+/* أزرار بنفس هوية النظام */
+.stButton > button { border-radius:10px; border:1px solid #e2e8f0; font-family:inherit; }
+.stButton > button[kind="primary"] {
+    background:#2563eb; border-color:#2563eb; color:#fff; font-weight:bold;
+}
+.stDownloadButton > button { border-radius:10px; }
+
+/* بطاقات الإحصائيات */
 .card { background:#fff; border:1px solid #e2e8f0; border-radius:12px; padding:16px 18px; text-align:center; height:100%; }
 .card .lbl { color:#64748b; font-size:13px; margin-bottom:6px; }
 .card .val { font-size:20px; font-weight:800; direction:ltr; }
-div[data-testid="stDataFrame"] { direction: ltr; }
+
+/* تبويبات بشكل أزرار */
+.stTabs [data-baseweb="tab-list"] { gap:6px; }
+.stTabs [data-baseweb="tab"] {
+    background:#e2e8f0; border-radius:10px 10px 0 0; padding:6px 18px;
+    color:#0f172a; font-weight:600;
+}
+.stTabs [aria-selected="true"] { background:#2563eb; color:#fff !important; }
+
+/* عربي مظبوط: العناوين والتسميات والحقول */
+[data-testid="stWidgetLabel"] p { text-align:right !important; }
+.stTextInput input, .stNumberInput input, .stTextArea textarea {
+    border-radius:9px; border:1px solid #e2e8f0;
+    direction:rtl; text-align:right;
+}
+.stTextArea textarea { text-align:right; }
+[data-baseweb="select"] > div { direction:rtl; text-align:right; }
+[data-baseweb="popover"] * { text-align:right; }
+.stDateInput input { direction:ltr; text-align:center; }
+.stCheckbox label { direction:rtl; }
+.stMarkdown, .stMarkdown p, .stMarkdown li { text-align:right; }
+.stInfo, .stWarning, .stError, .stSuccess { text-align:right; }
+div[data-testid="stExpander"] summary { direction:rtl; text-align:right; }
+div[data-testid="stDataFrame"] { direction:ltr; border:1px solid #e2e8f0; border-radius:12px; overflow:hidden; }
+div[data-testid="stExpander"] { background:#fff; border:1px solid #e2e8f0; border-radius:12px; }
+.stAlert { border-radius:10px; }
 </style>
 """
 st.markdown(CSS, unsafe_allow_html=True)
+
+# سكربت لطي الشريط الجانبي بعد اختيار عنوان من القايمة
+COLLAPSE_SIDEBAR_JS = """
+<script>
+(function(){
+  try{
+    var doc = window.parent.document;
+    var btn = doc.querySelector('[data-testid="stSidebarCollapseButton"] button') ||
+              doc.querySelector('[data-testid="stSidebar"] button[aria-label*="lose" i]') ||
+              doc.querySelector('button[aria-label*="sidebar" i]');
+    if (btn) btn.click();
+  }catch(e){}
+})();
+</script>
+"""
 
 # ================== تعريف الجداول ==================
 TABLE_COLS = {
@@ -363,8 +423,12 @@ def cards_row(cards):
                 unsafe_allow_html=True)
 
 
-def invoices_table():
-    rows = sorted(backend.list('invoices'), key=lambda r: r.get('id') or 0, reverse=True)
+def invoice_rows():
+    return sorted(backend.list('invoices'), key=lambda r: r.get('id') or 0, reverse=True)
+
+
+def invoices_table(rows=None):
+    rows = rows if rows is not None else invoice_rows()
     data = []
     for r in rows:
         total, paid = float(r['total'] or 0), float(r['paid'] or 0)
@@ -379,7 +443,11 @@ def invoices_table():
             'المتبقي': fmt(total - paid),
             'الحالة': invoice_status_text(total, paid),
         })
-    return pd.DataFrame(data)
+    # أعمدة معكوسة عمداً: جداول Streamlit بترسم من اليسار،
+    # فعكس الترتيب يخلي العمود الأول (رقم الفاتورة) يظهر على اليمين زي القراءة العربية
+    return pd.DataFrame(data, columns=[
+        'الحالة', 'المتبقي', 'المدفوع', 'الخصم', 'الإجمالي',
+        'التاريخ', 'الطرف', 'النوع', 'رقم الفاتورة'])
 
 
 # ================== تسجيل الدخول ==================
@@ -471,11 +539,25 @@ def invoice_editor(inv=None, kp='new'):
         st.warning(f"أضف {'عميلاً' if t == 'sale' else 'مورداً'} أولاً من صفحته")
         return
 
+    # ---- بحث تفاعلي بالاسم: اكتب أول الحروف تتصفى القايمة ----
     pnames = [p['name'] for p in parties]
-    default_idx = pnames.index(inv['party_name']) if (inv and inv['party_name'] in pnames) else 0
-    party_name = st.selectbox('العميل' if t == 'sale' else 'المورد', pnames,
-                              index=default_idx, key=kp + 'party')
-    party = next(p for p in parties if p['name'] == party_name)
+    q_def = inv['party_name'] if inv else ''
+    q = st.text_input('✍️ ابدأ كتابة الاسم — الأسماء المطابقة ستظهر بالأسفل',
+                      value=q_def, key=kp + 'partyq').strip()
+    if q:
+        matches = [n for n in pnames if n.startswith(q)]
+        if matches:
+            st.caption(f'🔎 {len(matches)} اسم يبدأ بـ "{q}"')
+        else:
+            st.warning(f'لا يوجد اسم يبدأ بـ "{q}" — أضفه أولاً من صفحته')
+    else:
+        matches = pnames
+    opts = ['— اختر —'] + matches
+    default_idx = (matches.index(inv['party_name']) + 1) if (inv and inv['party_name'] in matches) else 0
+    sel = st.selectbox('العميل' if t == 'sale' else 'المورد', opts,
+                       index=default_idx, key=kp + 'party')
+    party = None if sel == '— اختر —' else next(
+        (p for p in parties if p['name'] == sel), None)
 
     c1, c2, c3 = st.columns(3)
     d_val = date.fromisoformat(inv['date']) if (inv and inv['date']) else date.today()
@@ -492,15 +574,16 @@ def invoice_editor(inv=None, kp='new'):
     id2name = {p['id']: p['name'] for p in products}
     prod_opts = [''] + list(pmap.keys())
 
+    # أعمدة معكوسة لاتجاه القراءة العربية (المنتج يظهر على اليمين)
     if inv:
-        rows_df = [{'المنتج': id2name.get(it.get('productId'), ''),
-                    'الصنف': it.get('desc', ''),
+        rows_df = [{'السعر': float(it.get('price') or 0),
                     'الكمية': float(it.get('qty') or 0),
-                    'السعر': float(it.get('price') or 0)} for it in items_of(inv)]
+                    'الصنف': it.get('desc', ''),
+                    'المنتج': id2name.get(it.get('productId'), '')} for it in items_of(inv)]
     else:
-        rows_df = [{'المنتج': '', 'الصنف': '', 'الكمية': 1.0, 'السعر': 0.0}]
+        rows_df = [{'السعر': 0.0, 'الكمية': 1.0, 'الصنف': '', 'المنتج': ''}]
 
-    st.markdown('**بنود الفاتورة** — اختر المنتج لتعبئة الاسم والسعر تلقائياً')
+    st.markdown('**بنود الفاتورة** — اضغط خانة المنتج واكتب أول الحروف لتتصفى القايمة فوراً')
     items_df = st.data_editor(
         pd.DataFrame(rows_df),
         num_rows='dynamic', hide_index=True, use_container_width=True,
@@ -538,7 +621,10 @@ def invoice_editor(inv=None, kp='new'):
     # ---- الحفظ ----
     shortage, can_save = [], True
     if st.button('💾 حفظ الفاتورة', key=kp + 'save', type='primary'):
-        if valid.empty:
+        if party is None:
+            st.error('اختر ' + ('العميل' if t == 'sale' else 'المورد') +
+                     ' من القائمة — أو اكتب أول حروف اسمه في خانة البحث')
+        elif valid.empty:
             st.error('أضف بنداً واحداً على الأقل (صنف + كمية)')
         else:
             items_data = [{
@@ -579,19 +665,101 @@ def invoice_editor(inv=None, kp='new'):
                     backend.insert('invoices', vals)
                 for k in [k for k in list(st.session_state) if k.startswith(kp)]:
                     del st.session_state[k]
+                st.session_state.pop('edit_inv_id', None)
                 st.toast('✅ تم حفظ الفاتورة ' + number, icon='✅')
                 st.rerun()
 
 
-def pick_invoice(label):
-    rows = sorted(backend.list('invoices'), key=lambda r: r.get('id') or 0, reverse=True)
-    if not rows:
-        return None
-    opts = {f"{r['number']} — {r['party_name']} — {r['date']}": r['id'] for r in rows}
-    pick = st.selectbox(label, ['— اختر —'] + list(opts.keys()))
-    if pick == '— اختر —':
-        return None
-    return load_invoice(opts[pick])
+def to_date(s):
+    try:
+        return date.fromisoformat(str(s)[:10])
+    except Exception:
+        return date.today()
+
+
+@st.dialog('🗑️ تأكيد الحذف')
+def confirm_delete(name, action):
+    st.warning(f'هل أنت متأكد من حذف "{name}"؟')
+    st.caption('⚠️ لا يمكن التراجع عن هذه الخطوة.')
+    c1, c2 = st.columns(2)
+    if c1.button('🗑️ نعم، احذف', type='primary', use_container_width=True):
+        action()
+        st.toast('🗑️ تم الحذف', icon='🗑️')
+        st.rerun()
+    if c2.button('إلغاء', use_container_width=True):
+        st.rerun()
+
+
+@st.dialog('✏️ تعديل')
+def edit_row_dialog(fields, save_cb):
+    vals = {}
+    for f in fields:
+        k = 'dlg_' + f['key']
+        v, ft = f.get('value'), f.get('type', 'text')
+        if ft == 'text':
+            vals[f['key']] = st.text_input(f['label'], value=v, key=k)
+        elif ft == 'textarea':
+            vals[f['key']] = st.text_area(f['label'], value=v, key=k)
+        elif ft == 'number':
+            vals[f['key']] = st.number_input(f['label'], min_value=0.0,
+                                             value=float(v or 0),
+                                             step=float(f.get('step', 1.0)), key=k)
+        elif ft == 'date':
+            vals[f['key']] = st.date_input(f['label'], value=to_date(v), key=k)
+        elif ft == 'select':
+            opts = f['options']
+            idx = opts.index(v) if v in opts else f.get('default_index', 0)
+            vals[f['key']] = st.selectbox(f['label'], opts, index=idx, key=k)
+    c1, c2 = st.columns(2)
+    if c1.button('💾 حفظ التعديل', type='primary', use_container_width=True):
+        save_cb(vals)
+        st.toast('✅ تم التعديل بنجاح', icon='✅')
+        st.rerun()
+    if c2.button('إلغاء', use_container_width=True):
+        st.rerun()
+
+
+@st.dialog('👁️ تفاصيل الفاتورة', width='large')
+def details_dialog(inv):
+    items = items_of(inv)
+    it_df = pd.DataFrame([{
+        '#': i + 1, 'الصنف': it.get('desc', ''),
+        'الكمية': it.get('qty', 0), 'السعر': fmt(it.get('price', 0)),
+        'الإجمالي': fmt((it.get('qty') or 0) * (it.get('price') or 0)),
+    } for i, it in enumerate(items)],
+        columns=['الإجمالي', 'السعر', 'الكمية', 'الصنف', '#'])
+    st.dataframe(it_df, use_container_width=True, hide_index=True)
+    remain = (inv['total'] or 0) - (inv['paid'] or 0)
+    cards_row([
+        {'lbl': 'إجمالي البنود', 'val': fmt(inv['subtotal']), 'clr': '#0f172a'},
+        {'lbl': 'الخصم', 'val': fmt(inv['discount']), 'clr': '#dc2626'},
+        {'lbl': 'الإجمالي النهائي', 'val': fmt(inv['total']), 'clr': '#2563eb'},
+        {'lbl': 'المدفوع', 'val': fmt(inv['paid']), 'clr': '#16a34a'},
+        {'lbl': 'المتبقي', 'val': fmt(remain), 'clr': '#dc2626' if remain > 0 else '#16a34a'},
+        {'lbl': 'الحالة', 'val': invoice_status_text(inv['total'], inv['paid']), 'clr': '#0f172a'},
+    ])
+    if inv['notes']:
+        st.info('📝 ملاحظات: ' + inv['notes'])
+    st.download_button('⬇️ تحميل الفاتورة (HTML للطباعة والمشاركة)',
+                       build_invoice_html(inv, items),
+                       file_name=f"{inv['number']}.html", mime='text/html')
+    if st.button('إغلاق', use_container_width=True):
+        st.rerun()
+
+
+@st.dialog('💵 تسديد')
+def pay_dialog(inv):
+    remain = (inv['total'] or 0) - (inv['paid'] or 0)
+    st.info(f"الإجمالي: {fmt(inv['total'])} — المدفوع: {fmt(inv['paid'])} — المتبقي: {fmt(remain)}")
+    amt = st.number_input('المبلغ المسدد الآن', min_value=0.0, step=0.01,
+                          value=float(max(remain, 0)))
+    c1, c2 = st.columns(2)
+    if c1.button('💾 تسجيل الدفع', type='primary', use_container_width=True):
+        backend.update('invoices', inv['id'], {'paid': float(inv['paid'] or 0) + amt})
+        st.toast('✅ تم تسجيل الدفع', icon='✅')
+        st.rerun()
+    if c2.button('إلغاء', use_container_width=True):
+        st.rerun()
 
 
 def invoices_page():
@@ -601,72 +769,46 @@ def invoices_page():
     tf = c1.selectbox('النوع', ['الكل', 'بيع', 'شراء'])
     q = c2.text_input('🔍 بحث (رقم الفاتورة / الطرف)', '').strip()
 
-    df = invoices_table()
+    rows = invoice_rows()
+    view = rows
     if tf != 'الكل':
-        df = df[df['النوع'] == tf]
+        view = [r for r in view if ('بيع' if r.get('type') == 'sale' else 'شراء') == tf]
     if q:
-        m = df.apply(lambda r: q in str(r['رقم الفاتورة']) or q in str(r['الطرف']), axis=1)
-        df = df[m]
-    st.dataframe(df, use_container_width=True, hide_index=True)
+        view = [r for r in view if q in str(r.get('number') or '') or q in str(r.get('party_name') or '')]
+    df = invoices_table(view)
+
+    # اختيار صف من الجدول ثم تنفيذ العملية عليه
+    ev = st.dataframe(df, use_container_width=True, hide_index=True,
+                      on_select='rerun', selection_mode='single-row', key='inv_grid')
+    sel_rows = ev.selection.rows if ev.selection else []
+    sidx = sel_rows[0] if sel_rows else None
+    inv = view[sidx] if (sidx is not None and 0 <= sidx < len(view)) else None
+    if sel_rows:
+        st.caption(f"📌 المحدد: {inv['number']} — {inv['party_name']}")
+
+    b1, b2, b3, b4, _sp = st.columns([1, 1, 1, 1, 3])
+    if b1.button('👁️ تفاصيل', use_container_width=True, disabled=inv is None) and inv:
+        details_dialog(inv)
+    if b2.button('✏️ تعديل', use_container_width=True, disabled=inv is None) and inv:
+        st.session_state['edit_inv_id'] = inv['id']
+    if b3.button('💵 تسديد', use_container_width=True, disabled=inv is None) and inv:
+        pay_dialog(inv)
+    if b4.button('🗑️ حذف', use_container_width=True, disabled=inv is None) and inv:
+        def do_del(inv=inv):
+            apply_items_effect(items_of(inv), inv['type'], -1)
+            backend.delete('invoices', inv['id'])
+            st.session_state.pop('inv_grid', None)
+        confirm_delete(f"الفاتورة {inv['number']}", do_del)
 
     with st.expander('➕ فاتورة جديدة', expanded=False):
         invoice_editor(None, kp='new')
 
-    tab_v, tab_e, tab_p, tab_d = st.tabs(['👁️ التفاصيل', '✏️ تعديل', '💵 تسديد', '🗑️ حذف'])
-
-    with tab_v:
-        inv = pick_invoice('اختر الفاتورة')
-        if inv:
-            items = items_of(inv)
-            it_df = pd.DataFrame([{
-                '#': i + 1, 'الصنف': it.get('desc', ''),
-                'الكمية': it.get('qty', 0), 'السعر': fmt(it.get('price', 0)),
-                'الإجمالي': fmt((it.get('qty') or 0) * (it.get('price') or 0)),
-            } for i, it in enumerate(items)])
-            st.dataframe(it_df, use_container_width=True, hide_index=True)
-            remain = (inv['total'] or 0) - (inv['paid'] or 0)
-            cards_row([
-                {'lbl': 'إجمالي البنود', 'val': fmt(inv['subtotal']), 'clr': '#0f172a'},
-                {'lbl': 'الخصم', 'val': fmt(inv['discount']), 'clr': '#dc2626'},
-                {'lbl': 'الإجمالي النهائي', 'val': fmt(inv['total']), 'clr': '#2563eb'},
-                {'lbl': 'المدفوع', 'val': fmt(inv['paid']), 'clr': '#16a34a'},
-                {'lbl': 'المتبقي', 'val': fmt(remain), 'clr': '#dc2626' if remain > 0 else '#16a34a'},
-                {'lbl': 'الحالة', 'val': invoice_status_text(inv['total'], inv['paid']), 'clr': '#0f172a'},
-            ])
-            if inv['notes']:
-                st.info('📝 ملاحظات: ' + inv['notes'])
-            st.download_button('⬇️ تحميل الفاتورة (HTML للطباعة والمشاركة)',
-                               build_invoice_html(inv, items),
-                               file_name=f"{inv['number']}.html", mime='text/html')
-
-    with tab_e:
-        inv = pick_invoice('اختر الفاتورة للتعديل')
-        if inv:
-            invoice_editor(inv, kp=f"e{inv['id']}")
-
-    with tab_p:
-        inv = pick_invoice('اختر الفاتورة للتسديد')
-        if inv:
-            remain = (inv['total'] or 0) - (inv['paid'] or 0)
-            st.info(f"الإجمالي: {fmt(inv['total'])} — المدفوع: {fmt(inv['paid'])} — المتبقي: {fmt(remain)}")
-            amt = st.number_input('المبلغ المسدد الآن', min_value=0.0, step=0.01,
-                                  value=float(max(remain, 0)), key=f'pay{inv["id"]}')
-            if st.button('💾 تسجيل الدفع', key=f'paybtn{inv["id"]}', type='primary'):
-                backend.update('invoices', inv['id'],
-                               {'paid': float(inv['paid'] or 0) + amt})
-                st.toast('✅ تم تسجيل الدفع', icon='✅')
-                st.rerun()
-
-    with tab_d:
-        inv = pick_invoice('اختر الفاتورة للحذف')
-        if inv:
-            st.warning(f"سيتم حذف الفاتورة {inv['number']} وإرجاع كمياتها للمخزون.")
-            if st.checkbox('أنا متأكد من الحذف', key=f'delchk{inv["id"]}'):
-                if st.button('🗑️ حذف نهائي', key=f'delbtn{inv["id"]}', type='primary'):
-                    apply_items_effect(items_of(inv), inv['type'], -1)
-                    backend.delete('invoices', inv['id'])
-                    st.toast('🗑️ تم حذف الفاتورة', icon='✅')
-                    st.rerun()
+    eid = st.session_state.get('edit_inv_id')
+    if eid:
+        cur = load_invoice(eid)
+        if cur:
+            with st.expander(f"✏️ تعديل الفاتورة {cur['number']}", expanded=True):
+                invoice_editor(cur, kp=f'e{eid}')
 
 
 # ================== كشف الحساب ==================
@@ -714,7 +856,9 @@ def statement_page():
         st.info('لا توجد فواتير لهذا الحساب')
         return
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=[
+        'الرصيد', 'دائن (مسدد)', 'مدين (عليه)', 'البيان',
+        'رقم الفاتورة', 'التاريخ', 'n'])
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     totals = {'debit': t_debit, 'credit': t_credit, 'balance': run_bal}
@@ -730,68 +874,54 @@ def statement_page():
 # ================== العملاء / الموردون ==================
 def party_page(table, title, emoji, label):
     st.title(f'{emoji} {title}')
-    q = st.text_input('🔍 بحث بالاسم أو الهاتف', '').strip()
+    q = st.text_input('🔍 بحث بالاسم أو الهاتف', key=f'{table}_q').strip()
     rows = sorted(backend.list(table), key=lambda r: r.get('name') or '')
     if q:
         rows = [r for r in rows if q in (r.get('name') or '') or q in (r.get('phone') or '')]
     df = pd.DataFrame([{'الاسم': r['name'], 'الهاتف': r.get('phone') or '—',
                         'العنوان': r.get('address') or '—', 'ملاحظات': r.get('notes') or '—'}
-                       for r in rows])
-    if df.empty:
-        st.info('لا توجد بيانات بعد')
-    else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+                       for r in rows],
+                      columns=['ملاحظات', 'العنوان', 'الهاتف', 'الاسم'])
+    # اختيار صف من الجدول ثم تنفيذ العملية عليه
+    ev = st.dataframe(df, use_container_width=True, hide_index=True,
+                      on_select='rerun', selection_mode='single-row',
+                      key=f'{table}_grid')
+    sel_rows = ev.selection.rows if ev.selection else []
+    sidx = sel_rows[0] if sel_rows else None
+    row = rows[sidx] if (sidx is not None and 0 <= sidx < len(rows)) else None
+    if row:
+        st.caption(f"📌 المحدد: {row['name']}")
 
-    a, e, d = st.tabs(['➕ إضافة', '✏️ تعديل', '🗑️ حذف'])
-    with a:
+    b1, b2, _sp = st.columns([1, 1, 4])
+    if b1.button('✏️ تعديل', use_container_width=True, disabled=row is None) and row:
+        edit_row_dialog([
+            {'key': 'name', 'label': f'اسم {label}', 'value': row['name'], 'type': 'text'},
+            {'key': 'phone', 'label': 'رقم الهاتف', 'value': row.get('phone') or '', 'type': 'text'},
+            {'key': 'address', 'label': 'العنوان', 'value': row.get('address') or '', 'type': 'text'},
+            {'key': 'notes', 'label': 'ملاحظات', 'value': row.get('notes') or '', 'type': 'textarea'},
+        ], lambda vals, rid=row['id'], tb=table: backend.update(tb, rid, {
+            'name': str(vals['name']).strip(), 'phone': str(vals['phone']).strip(),
+            'address': str(vals['address']).strip(), 'notes': str(vals['notes']).strip()}))
+    if b2.button('🗑️ حذف', use_container_width=True, disabled=row is None) and row:
+        def do_del(rid=row['id'], tb=table):
+            backend.delete(tb, rid)
+            st.session_state.pop(f'{tb}_grid', None)
+        confirm_delete(row['name'], do_del)
+
+    with st.expander('➕ إضافة جديد', expanded=not rows):
         with st.form(f'add_{table}'):
-            n = st.text_input(f'اسم {label}', key=f'{table}_an')
-            ph = st.text_input('رقم الهاتف', key=f'{table}_ap')
-            ad = st.text_input('العنوان', key=f'{table}_aa')
-            nt = st.text_area('ملاحظات', key=f'{table}_ant')
+            n = st.text_input(f'اسم {label}')
+            ph = st.text_input('رقم الهاتف')
+            ad = st.text_input('العنوان')
+            nt = st.text_area('ملاحظات')
             if st.form_submit_button('💾 حفظ', type='primary'):
                 if not n.strip():
                     st.error('الاسم مطلوب')
                 else:
                     backend.insert(table, {'name': n.strip(), 'phone': ph.strip(),
                                            'address': ad.strip(), 'notes': nt.strip()})
-                    st.toast('✅ تمت الإضافة', icon='✅')
-                    st.rerun()
-    with e:
-        all_rows = sorted(backend.list(table), key=lambda r: r.get('name') or '')
-        if not all_rows:
-            st.info('لا يوجد ما يتم تعديله')
-        else:
-            names = [r['name'] for r in all_rows]
-            sel = st.selectbox(f'اختر {label} للتعديل', names, key=f'{table}_esel')
-            row = next(r for r in all_rows if r['name'] == sel)
-            k = f'{table}_e{row["id"]}'
-            n = st.text_input(f'اسم {label}', value=row['name'], key=k + 'n')
-            ph = st.text_input('رقم الهاتف', value=row.get('phone') or '', key=k + 'p')
-            ad = st.text_input('العنوان', value=row.get('address') or '', key=k + 'a')
-            nt = st.text_area('ملاحظات', value=row.get('notes') or '', key=k + 't')
-            if st.button('💾 حفظ التعديل', key=k + 'btn', type='primary'):
-                if not n.strip():
-                    st.error('الاسم مطلوب')
-                else:
-                    backend.update(table, row['id'],
-                                   {'name': n.strip(), 'phone': ph.strip(),
-                                    'address': ad.strip(), 'notes': nt.strip()})
-                    st.toast('✅ تم التعديل', icon='✅')
-                    st.rerun()
-    with d:
-        all_rows = sorted(backend.list(table), key=lambda r: r.get('name') or '')
-        if not all_rows:
-            st.info('لا يوجد ما يتم حذفه')
-        else:
-            sel = st.selectbox(f'اختر {label} للحذف', [r['name'] for r in all_rows],
-                               key=f'{table}_dsel')
-            row = next(r for r in all_rows if r['name'] == sel)
-            st.warning(f"سيتم حذف: {row['name']} (فواتيره القديمة ستبقى محفوظة باسمه)")
-            if st.checkbox('أنا متأكد من الحذف', key=f'{table}_dchk'):
-                if st.button('🗑️ حذف نهائي', key=f'{table}_dbtn', type='primary'):
-                    backend.delete(table, row['id'])
-                    st.toast('🗑️ تم الحذف', icon='✅')
+                    st.session_state.pop(f'{table}_q', None)
+                    st.toast('✅ تمت الإضافة — الجدول اتحدث', icon='✅')
                     st.rerun()
 
 
@@ -799,7 +929,7 @@ def party_page(table, title, emoji, label):
 def products_page():
     st.title('📦 المنتجات والمخزون')
     st.caption('الكمية تتخصم تلقائياً مع فواتير البيع وتتزود مع فواتير الشراء')
-    q = st.text_input('🔍 بحث باسم المنتج', '').strip()
+    q = st.text_input('🔍 بحث باسم المنتج', key='p_q').strip()
     rows = sorted(backend.list('products'), key=lambda r: r.get('name') or '')
     if q:
         rows = [r for r in rows if q in (r.get('name') or '')]
@@ -812,15 +942,44 @@ def products_page():
             'المخزون': f'⚠️ {s}' if (m > 0 and s <= m) else f'{s}',
             'حد التنبيه': m,
         })
-    df = pd.DataFrame(data)
-    if df.empty:
-        st.info('لا توجد منتجات بعد')
-    else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-    a, e, d = st.tabs(['➕ إضافة', '✏️ تعديل', '🗑️ حذف'])
+    df = pd.DataFrame(data, columns=[
+        'حد التنبيه', 'المخزون', 'سعر البيع', 'سعر الشراء', 'الوحدة', 'اسم المنتج'])
     UNITS = ['قطعة', 'كرتونة', 'كجم', 'جرام', 'لتر', 'متر', 'أخرى']
-    with a:
+
+    # اختيار صف من الجدول ثم تنفيذ العملية عليه
+    ev = st.dataframe(df, use_container_width=True, hide_index=True,
+                      on_select='rerun', selection_mode='single-row', key='p_grid')
+    sel_rows = ev.selection.rows if ev.selection else []
+    sidx = sel_rows[0] if sel_rows else None
+    row = rows[sidx] if (sidx is not None and 0 <= sidx < len(rows)) else None
+    if row:
+        st.caption(f"📌 المحدد: {row['name']}")
+
+    b1, b2, _sp = st.columns([1, 1, 4])
+    if b1.button('✏️ تعديل', use_container_width=True, disabled=row is None) and row:
+        edit_row_dialog([
+            {'key': 'name', 'label': 'اسم المنتج', 'value': row['name'], 'type': 'text'},
+            {'key': 'unit', 'label': 'الوحدة', 'value': row.get('unit') or 'أخرى',
+             'type': 'select', 'options': UNITS},
+            {'key': 'purchase_price', 'label': 'سعر الشراء',
+             'value': float(row.get('purchase_price') or 0), 'type': 'number', 'step': 0.01},
+            {'key': 'sale_price', 'label': 'سعر البيع',
+             'value': float(row.get('sale_price') or 0), 'type': 'number', 'step': 0.01},
+            {'key': 'stock', 'label': 'الكمية بالمخزون',
+             'value': float(row.get('stock') or 0), 'type': 'number', 'step': 1.0},
+            {'key': 'min_stock', 'label': 'حد التنبيه',
+             'value': float(row.get('min_stock') or 0), 'type': 'number', 'step': 1.0},
+        ], lambda vals, rid=row['id']: backend.update('products', rid, {
+            'name': str(vals['name']).strip(), 'unit': vals['unit'],
+            'purchase_price': vals['purchase_price'], 'sale_price': vals['sale_price'],
+            'stock': vals['stock'], 'min_stock': vals['min_stock']}))
+    if b2.button('🗑️ حذف', use_container_width=True, disabled=row is None) and row:
+        def do_del(rid=row['id']):
+            backend.delete('products', rid)
+            st.session_state.pop('p_grid', None)
+        confirm_delete(row['name'], do_del)
+
+    with st.expander('➕ إضافة جديد', expanded=not rows):
         with st.form('add_product'):
             n = st.text_input('اسم المنتج')
             u = st.selectbox('الوحدة', UNITS)
@@ -835,50 +994,8 @@ def products_page():
                     backend.insert('products', {'name': n.strip(), 'unit': u,
                                                 'purchase_price': pp, 'sale_price': sp,
                                                 'stock': sk, 'min_stock': mn})
-                    st.toast('✅ تمت الإضافة', icon='✅')
-                    st.rerun()
-    with e:
-        all_rows = sorted(backend.list('products'), key=lambda r: r.get('name') or '')
-        if not all_rows:
-            st.info('لا يوجد ما يتم تعديله')
-        else:
-            sel = st.selectbox('اختر المنتج للتعديل', [r['name'] for r in all_rows],
-                               key='p_esel')
-            row = next(r for r in all_rows if r['name'] == sel)
-            k = f'pe{row["id"]}'
-            n = st.text_input('اسم المنتج', value=row['name'], key=k + 'n')
-            u = st.selectbox('الوحدة', UNITS,
-                             index=UNITS.index(row['unit']) if row.get('unit') in UNITS else 6,
-                             key=k + 'u')
-            pp = st.number_input('سعر الشراء', min_value=0.0, step=0.01,
-                                 value=float(row.get('purchase_price') or 0), key=k + 'pp')
-            sp = st.number_input('سعر البيع', min_value=0.0, step=0.01,
-                                 value=float(row.get('sale_price') or 0), key=k + 'sp')
-            sk = st.number_input('الكمية بالمخزون', step=1.0,
-                                 value=float(row.get('stock') or 0), key=k + 'sk')
-            mn = st.number_input('حد التنبيه', step=1.0,
-                                 value=float(row.get('min_stock') or 0), key=k + 'mn')
-            if st.button('💾 حفظ التعديل', key=k + 'btn', type='primary'):
-                if not n.strip():
-                    st.error('الاسم مطلوب')
-                else:
-                    backend.update('products', row['id'],
-                                   {'name': n.strip(), 'unit': u, 'purchase_price': pp,
-                                    'sale_price': sp, 'stock': sk, 'min_stock': mn})
-                    st.toast('✅ تم التعديل', icon='✅')
-                    st.rerun()
-    with d:
-        all_rows = sorted(backend.list('products'), key=lambda r: r.get('name') or '')
-        if not all_rows:
-            st.info('لا يوجد ما يتم حذفه')
-        else:
-            sel = st.selectbox('اختر المنتج للحذف', [r['name'] for r in all_rows], key='p_dsel')
-            row = next(r for r in all_rows if r['name'] == sel)
-            st.warning(f"سيتم حذف: {row['name']} (كمياته في الفواتير القديمة ستبقى سليمة)")
-            if st.checkbox('أنا متأكد من الحذف', key='p_dchk'):
-                if st.button('🗑️ حذف نهائي', key='p_dbtn', type='primary'):
-                    backend.delete('products', row['id'])
-                    st.toast('🗑️ تم الحذف', icon='✅')
+                    st.session_state.pop('p_q', None)
+                    st.toast('✅ تمت الإضافة — الجدول اتحدث', icon='✅')
                     st.rerun()
 
 
@@ -887,21 +1004,44 @@ def expenses_page():
     st.title('💸 المصاريف اليومية')
     CATS = ['إيجار', 'كهرباء', 'مياه', 'رواتب', 'مواصلات', 'صيانة',
             'اتصالات وإنترنت', 'مشتريات متنوعة', 'أخرى']
-    q = st.text_input('🔍 بحث بالتصنيف أو البيان', '').strip()
+    q = st.text_input('🔍 بحث بالتصنيف أو البيان', key='e_q').strip()
     rows = sorted(backend.list('expenses'),
                   key=lambda r: (r.get('date') or '', r.get('id') or 0), reverse=True)
     if q:
         rows = [r for r in rows if q in (r.get('category') or '') or q in (r.get('notes') or '')]
     df = pd.DataFrame([{'التاريخ': r.get('date'), 'التصنيف': r.get('category'),
                         'المبلغ': fmt(r.get('amount')), 'البيان': r.get('notes') or '—'}
-                       for r in rows])
-    if df.empty:
-        st.info('لا توجد مصاريف بعد')
-    else:
-        st.dataframe(df, use_container_width=True, hide_index=True)
+                       for r in rows],
+                      columns=['البيان', 'المبلغ', 'التصنيف', 'التاريخ'])
+    # اختيار صف من الجدول ثم تنفيذ العملية عليه
+    ev = st.dataframe(df, use_container_width=True, hide_index=True,
+                      on_select='rerun', selection_mode='single-row', key='e_grid')
+    sel_rows = ev.selection.rows if ev.selection else []
+    sidx = sel_rows[0] if sel_rows else None
+    row = rows[sidx] if (sidx is not None and 0 <= sidx < len(rows)) else None
+    if row:
+        st.caption(f"📌 المحدد: {row.get('date')} — {row.get('category')}")
 
-    a, e, d = st.tabs(['➕ إضافة', '✏️ تعديل', '🗑️ حذف'])
-    with a:
+    b1, b2, _sp = st.columns([1, 1, 4])
+    if b1.button('✏️ تعديل', use_container_width=True, disabled=row is None) and row:
+        edit_row_dialog([
+            {'key': 'date', 'label': 'التاريخ', 'value': to_date(row.get('date')), 'type': 'date'},
+            {'key': 'category', 'label': 'التصنيف', 'value': row.get('category') or 'أخرى',
+             'type': 'select', 'options': CATS},
+            {'key': 'amount', 'label': 'المبلغ', 'value': float(row.get('amount') or 0),
+             'type': 'number', 'step': 0.01},
+            {'key': 'notes', 'label': 'البيان / ملاحظات', 'value': row.get('notes') or '',
+             'type': 'textarea'},
+        ], lambda vals, rid=row['id']: backend.update('expenses', rid, {
+            'date': vals['date'].isoformat(), 'category': vals['category'],
+            'amount': vals['amount'], 'notes': str(vals['notes']).strip()}))
+    if b2.button('🗑️ حذف', use_container_width=True, disabled=row is None) and row:
+        def do_del(rid=row['id']):
+            backend.delete('expenses', rid)
+            st.session_state.pop('e_grid', None)
+        confirm_delete(f"{row.get('category')} — {fmt(row.get('amount'))}", do_del)
+
+    with st.expander('➕ إضافة جديد', expanded=not rows):
         with st.form('add_exp'):
             d1, d2 = st.columns(2)
             dt = d1.date_input('التاريخ', value=date.today())
@@ -911,48 +1051,9 @@ def expenses_page():
             if st.form_submit_button('💾 حفظ', type='primary'):
                 backend.insert('expenses', {'date': dt.isoformat(), 'category': cat,
                                             'amount': amt, 'notes': nt.strip()})
-                st.toast('✅ تمت الإضافة', icon='✅')
+                st.session_state.pop('e_q', None)
+                st.toast('✅ تمت الإضافة — الجدول اتحدث', icon='✅')
                 st.rerun()
-    with e:
-        all_rows = sorted(backend.list('expenses'),
-                          key=lambda r: (r.get('date') or '', r.get('id') or 0), reverse=True)
-        if not all_rows:
-            st.info('لا يوجد ما يتم تعديله')
-        else:
-            opts = {f"{r.get('date')} — {r.get('category')} — {fmt(r.get('amount'))}": r['id']
-                    for r in all_rows}
-            sel = st.selectbox('اختر المصروف للتعديل', list(opts.keys()), key='e_esel')
-            row = next(r for r in all_rows if r['id'] == opts[sel])
-            k = f'ee{row["id"]}'
-            dt = st.date_input('التاريخ', value=date.fromisoformat(row['date']), key=k + 'd')
-            cat = st.selectbox('التصنيف', CATS,
-                               index=CATS.index(row['category']) if row.get('category') in CATS else 8,
-                               key=k + 'c')
-            amt = st.number_input('المبلغ', min_value=0.0, step=0.01,
-                                  value=float(row.get('amount') or 0), key=k + 'a')
-            nt = st.text_area('البيان / ملاحظات', value=row.get('notes') or '', key=k + 't')
-            if st.button('💾 حفظ التعديل', key=k + 'btn', type='primary'):
-                backend.update('expenses', row['id'],
-                               {'date': dt.isoformat(), 'category': cat,
-                                'amount': amt, 'notes': nt.strip()})
-                st.toast('✅ تم التعديل', icon='✅')
-                st.rerun()
-    with d:
-        all_rows = sorted(backend.list('expenses'),
-                          key=lambda r: (r.get('date') or '', r.get('id') or 0), reverse=True)
-        if not all_rows:
-            st.info('لا يوجد ما يتم حذفه')
-        else:
-            opts = {f"{r.get('date')} — {r.get('category')} — {fmt(r.get('amount'))}": r['id']
-                    for r in all_rows}
-            sel = st.selectbox('اختر المصروف للحذف', list(opts.keys()), key='e_dsel')
-            row = next(r for r in all_rows if r['id'] == opts[sel])
-            st.warning(f"سيتم حذف: {row.get('category')} — {fmt(row.get('amount'))}")
-            if st.checkbox('أنا متأكد من الحذف', key='e_dchk'):
-                if st.button('🗑️ حذف نهائي', key='e_dbtn', type='primary'):
-                    backend.delete('expenses', row['id'])
-                    st.toast('🗑️ تم الحذف', icon='✅')
-                    st.rerun()
 
 
 # ================== التشغيل ==================
@@ -962,6 +1063,8 @@ if 'user' not in st.session_state:
     st.stop()
 
 with st.sidebar:
+    if os.path.exists(LOGO_PATH):
+        st.image(LOGO_PATH, width=110)
     st.markdown('### 💼 نظام الحسابات')
     if DB_MODE == 'supabase':
         st.caption('☁️ متصل بقاعدة البيانات السحابية')
@@ -969,12 +1072,17 @@ with st.sidebar:
         st.caption('💻 قاعدة بيانات محلية (SQLite)')
     if 'nav' not in st.session_state:
         st.session_state.nav = PAGES[0]
-    page = st.radio('التنقل', PAGES, key='nav', label_visibility='collapsed')
+    page = st.radio('التنقل', PAGES, key='nav', label_visibility='collapsed',
+                    on_change=lambda: st.session_state.update(_collapse=True))
     st.divider()
     st.write(f"👤 {st.session_state.user['name']}")
     if st.button('🚪 تسجيل الخروج', use_container_width=True):
         del st.session_state['user']
         st.rerun()
+
+# طي الشريط الجانبي بعد الضغط على أي عنوان من القايمة
+if st.session_state.pop('_collapse', False):
+    st.components.v1.html(COLLAPSE_SIDEBAR_JS, height=0)
 
 if page == PAGES[0]:
     dashboard()
